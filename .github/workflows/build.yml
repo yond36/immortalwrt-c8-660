@@ -1,0 +1,113 @@
+name: Build ImmortalWrt for NRadio WT9103 (C8-660)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "configs/**"
+      - ".github/workflows/**"
+
+env:
+  REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x
+  REPO_BRANCH: openwrt-21.02
+  CONFIG_FILE: configs/wt9103.config
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* \
+            /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost /usr/share/swift
+          sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+          sudo -E apt-get -y autoremove --purge
+          sudo -E apt-get clean
+          df -hT
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo -E apt-get -qq update
+          sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.eu.org/init_build_environment.sh)' \
+            || sudo -E apt-get -y install build-essential clang cmake curl gawk gettext git \
+                 libncurses-dev libssl-dev libtool rsync subversion swig texinfo unzip wget \
+                 zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libelf-dev libglib2.0-dev \
+                 libltdl-dev libreadline-dev libc6-dev-i386 gcc-multilib g++-multilib \
+                 python3 python3-pip python3-ply python3-docutils patch pkgconf p7zip-full \
+                 device-tree-compiler squashfs-tools flex bison autoconf automake autopoint \
+                 binutils gperf help2man intltool ccache upx-ucl xxd re2c scons qemu-utils \
+                 genisoimage nano vim
+          sudo -E timedatectl set-timezone "Asia/Shanghai" || true
+          df -hT
+
+      - name: Clone source code
+        run: |
+          git clone --depth=1 "$REPO_URL" -b "$REPO_BRANCH" openwrt
+
+      - name: Apply device config
+        run: |
+          cd openwrt
+          cp -f ../"$CONFIG_FILE" .config
+          make defconfig
+          grep -E 'CONFIG_TARGET_DEVICE.*nradio' .config
+
+      - name: Download packages
+        run: |
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Compile firmware
+        id: compile
+        run: |
+          cd openwrt
+          echo "$(nproc) threads"
+          make -j"$(nproc)" || make -j1 V=s
+          echo "COMPILE_DATE=$(date +%Y.%m.%d.%H%M)" >> "$GITHUB_ENV"
+
+      - name: Organize outputs
+        run: |
+          cd openwrt/bin/targets/*/*
+          rm -rf packages
+          ls -lh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-21.02-wt9103-${{ env.COMPILE_DATE }}
+          path: openwrt/bin/targets
+          retention-days: 60
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wt9103-${{ env.COMPILE_DATE }}
+          name: ImmortalWrt 21.02 for NRadio C8-660 (${{ env.COMPILE_DATE }})
+          body: |
+            hanwckf/immortalwrt-mt798x (openwrt-21.02) 自动编译。
+
+            设备: NRadio WT9103 (C8-660)
+            - `nradio_wt9103`: ubi 分区 112M
+            - `nradio_wt9103_512m`: ubi 分区占满整片 512M NAND（推荐）
+
+            `factory.bin` 用于从原厂固件/uboot 首次刷入；`sysupgrade.bin` 用于 OpenWrt 之间升级。
+          files: openwrt/bin/targets/**/*
+          make_latest: true
