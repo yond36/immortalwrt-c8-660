@@ -61,6 +61,12 @@ jobs:
         run: |
           git clone --depth=1 "$REPO_URL" -b "$REPO_BRANCH" openwrt
 
+      - name: Update and install feeds
+        run: |
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
       - name: Apply device config
         run: |
           cd openwrt
